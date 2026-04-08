@@ -1,9 +1,19 @@
 name: devops_incident_env
+version: "1.0"
 description: >
   A benchmark environment for evaluating LLM agents on DevOps incident triage.
   Agents must identify root causes, affected services, and severity levels from logs and alerts.
 
+entry_point: app:app
+port: 7860
+
 tasks:
-  - easy
-  - medium
-  - hard
+  - name: easy
+    description: Identify the root cause of the incident
+  - name: medium
+    description: Identify root cause, affected service, and severity
+  - name: hard
+    description: Full triage including root cause, service, severity, mitigation, and confidence
+
+tags:
+  - openenv
