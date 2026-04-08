@@ -1,0 +1,9 @@
+name: devops_incident_env
+description: >
+  A benchmark environment for evaluating LLM agents on DevOps incident triage.
+  Agents must identify root causes, affected services, and severity levels from logs and alerts.
+
+tasks:
+  - easy
+  - medium
+  - hard
