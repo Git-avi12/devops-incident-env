@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "devops-incident-env"
+version = "1.0.0"
+description = "DevOps Incident Triage OpenEnv environment"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "openai",
+    "openenv-core",
+]
+
+[tool.openenv]
+name = "devops_incident_env"
+entry_point = "app:app"
