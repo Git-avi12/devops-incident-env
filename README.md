@@ -1,218 +1,185 @@
-# DevOps Incident Response RL Environment
+# DevOps Incident Triage — OpenEnv Benchmark
 
-A deterministic reinforcement learning-style environment for automated DevOps incident triage and response. This system simulates real-world incident scenarios where an agent must diagnose failures and suggest structured remediation strategies from raw logs and alerts.
+A production-grade OpenEnv-compatible environment for evaluating LLM agents on real-world DevOps incident triage. Agents must diagnose root causes, identify affected services, assess severity, and propose concrete mitigations — all from structured logs and noisy alerts.
 
----
+Built by **Avanish Ganapathy**, 3rd year CS undergrad, Bangalore.
 
-## 🚀 Problem Statement
-
-Modern DevOps systems generate massive volumes of logs and alerts during incidents.
-
-Engineers are expected to:
-
-* Correlate signals across logs, alerts, and services
-* Identify the root cause under time pressure
-* Estimate severity accurately
-* Apply mitigation steps quickly
-
-This process is:
-
-* **Time-sensitive**
-* **Error-prone**
-* **Hard to scale with system complexity**
-
-👉 There is a clear need for **structured, automated incident reasoning systems**
+🤗 Space: [blah123/devops-incident-env](https://huggingface.co/spaces/Blah123/devops-incident-env)
+GitHub: [Git-avi12/devops-incident-env](https://github.com/Git-avi12/devops-incident-env)
 
 ---
 
-## 💡 Solution
+## Why this environment?
 
-This project builds a **deterministic RL-style evaluation environment** where an agent learns to:
+On-call engineers face a brutal problem: production is on fire, logs are streaming, alerts are firing — some real, some noise — and you have minutes to identify the right fix. This environment turns that problem into a rigorous, reproducible benchmark.
 
-* Diagnose **root causes** from raw logs
-* Identify affected **services**
-* Classify **incident severity**
-* Suggest **mitigation strategies**
-* Express **confidence** in its decisions
-
-The system is designed to simulate real-world reasoning under constraints — not just prediction.
-
----
-
-## 🧠 Environment Design
-
-### Observation
-
-Each episode provides:
-
-* `logs` → raw system logs
-* `alerts` → list of triggered alerts
+The core thesis is that a strong LLM agent should be able to:
+- Read structured telemetry logs with real metrics (CPU%, latency, error rates)
+- Filter red-herring alerts that look plausible but are irrelevant
+- Identify the precise root cause, not just the closest match
+- Propose specific, actionable mitigations — not generic advice
+- Express calibrated confidence (overconfidence on wrong answers is penalised)
 
 ---
 
-### Action (Agent Output)
+## Incident taxonomy
 
-The agent must produce a structured response:
+The environment covers **5 root cause categories** across **4 services**, with **31 unique incidents**:
 
-```python
-{
-  "root_cause": str,
-  "service": str,
-  "severity": str,
-  "mitigation": str,
-  "confidence": float  # [0.0, 1.0]
+| Root Cause | Services Affected | Severity Range |
+|---|---|---|
+| `database_overload` | payment, user, inventory, auth | medium → critical |
+| `memory_leak` | payment, user, inventory, auth | low → critical |
+| `network_latency` | payment, user, inventory, auth | low → critical |
+| `api_failure` | payment, user, inventory | medium → critical |
+| `disk_full` | payment, user, inventory, auth | low → critical |
+
+Each incident includes:
+- **5 structured log lines** with timestamps, log levels, and a `METRIC` line (e.g. `cpu=91% mem=58% db_connections=500/500 p99_latency_ms=4200`)
+- **Real alert signals** from the true root cause
+- **1–2 injected noise alerts** from a different root cause pool, shuffled in at reset time
+
+---
+
+## Noise injection
+
+At every `reset()`, the environment injects 1–2 plausible-but-irrelevant red-herring alerts alongside the true alerts. For example, a `database_overload` incident might also surface `"Memory usage at 74% (within threshold)"` — something that looks worth investigating but is factually not the problem.
+
+The logs always contain enough signal to rule out the noise. This design directly separates agents that reason from agents that pattern-match on alert keywords.
+
+---
+
+## Reward system
+
+### Task modes
+
+| Mode | Scoring components | Use case |
+|---|---|---|
+| `easy` | Root cause only (binary 1.0 / 0.0) | Sanity check |
+| `medium` | Root (40%) + Service (30%) + Severity (30%) | Intermediate |
+| `hard` | Root (30%) + Service (20%) + Severity (20%) + Mitigation (30%) × Confidence factor | Full evaluation |
+
+### Mitigation scoring
+
+Mitigation responses are scored against a set of required keywords specific to each incident. Scoring is:
+- **Gated** on root cause correctness — a wrong root cause means 0 mitigation score regardless
+- **Deduplicated** — keyword spamming doesn't inflate the score
+- **Substring matched** — the agent's free-text response is checked for each required keyword
+
+### Confidence shaping (hard mode only)
+
+A confidence factor of ±25% is applied to the final reward:
+- Correct diagnosis + high confidence → up to **1.25× reward**
+- Wrong diagnosis + high confidence → down to **0.75× reward**
+
+This rewards calibrated agents and penalises overconfident wrong answers.
+
+### Exploit prevention
+
+- Mitigation score gated on root correctness
+- Zero reward if all three core fields (root, service, severity) are wrong
+- Keyword deduplication prevents reward inflation via repetition
+
+---
+
+## API reference
+
+Base URL: `https://blah123-devops-incident-env.hf.space`
+
+### `POST /reset`
+Start a new episode. Returns structured logs, noisy alerts, and task mode.
+
+```json
+Request:  { "task": "hard" }
+Response: {
+  "observation": {
+    "logs": "[14:02:31] ERROR  DB connections exceeded limit...\n[14:02:36] METRIC cpu=91% mem=58%...",
+    "alerts": ["High latency", "DB CPU spike", "Memory usage at 74% (within threshold)"],
+    "step_count": 0
+  },
+  "task": "hard"
 }
 ```
 
----
-
-## ⚙️ Core Features
-
-### 1. Deterministic Simulation
-
-* Fixed incident scenarios
-* Reproducible evaluation
-* No randomness in scoring
-
----
-
-### 2. Multi-Signal Reward System
-
-The reward is computed using multiple signals:
-
-* Root cause correctness
-* Service correctness
-* Severity correctness
-* Mitigation quality (keyword-based)
-* Confidence calibration
-
-This enables **fine-grained evaluation**, not just binary correctness.
-
----
-
-### 3. Difficulty Modes
-
-The environment supports three modes:
-
-* **easy** → clear signals, single failure
-* **medium** → correlated signals, moderate ambiguity
-* **hard** → noisy logs, multi-signal reasoning
-
----
-
-### 4. Exploit-Resistant Design
-
-* Mitigation scoring gated by root correctness
-* Keyword deduplication prevents reward inflation
-* Confidence penalizes overconfident wrong predictions
-* Zero-signal predictions receive zero reward
-
----
-
-## 📊 Evaluation Metrics
-
-The system evaluates agents using:
-
-* **Average Reward**
-* **Success Rate** (reward ≥ 0.8)
-* **Root Cause Accuracy**
-* **Service Accuracy**
-* **Severity Accuracy**
-* **Mitigation Score**
-* **Confidence Score**
-
-These metrics provide a **multi-dimensional view of performance**
-
----
-
-## 🧪 Running the Project
-
-### Run Single Inference
-
-```bash
-python scripts/run_inference.py
-```
-
----
-
-### Run Evaluation
-
-```bash
-python scripts/evaluate.py --episodes 100 --task hard
-```
-
----
-
-## 📁 Project Structure
-
-```
-env/
-  env.py           # Core environment logic
-  models.py        # Data models (Action, Observation, Reward)
-  state.py         # Internal state representation
-
-scripts/
-  run_inference.py # Single episode execution
-  evaluate.py      # Multi-episode evaluation loop
-```
-
----
-
-## 🔍 Example Scenario
+### `POST /step`
+Submit an action and receive a graded reward.
 
 ```json
-{
-  "logs": "ERROR: connection pool exhausted, requests timing out...",
-  "alerts": ["Timeout", "HighLatency"],
-  "ground_truth": {
-    "root_cause": "database_overload",
-    "service": "payment_service",
-    "severity": "critical",
-    "mitigation": "scale database, increase pool size"
+Request: {
+  "task": "hard",
+  "root_cause": "database_overload",
+  "service": "payment_service",
+  "severity": "high",
+  "mitigation": "scale database, optimize queries, increase connection pool size",
+  "confidence": 0.9
+}
+Response: {
+  "observation": { ... },
+  "reward": { "value": 1.0, "reason": "phase3:hard:graded" },
+  "done": true,
+  "info": {
+    "root_correct": true,
+    "service_correct": true,
+    "severity_correct": true,
+    "mitigation_score": 1.0,
+    "confidence": 0.9,
+    "confidence_factor": 1.23,
+    "final_reward": 1.0
   }
 }
 ```
 
----
+### `GET /state`
+Returns internal ground truth (for graders — not exposed to agents).
 
-## 🎯 Key Highlights
+### `GET /health`
+Returns `{ "status": "ok" }`.
 
-* Deterministic RL-style environment
-* Structured decision-making output
-* Multi-component reward system
-* Realistic DevOps incident simulation
-* Clean separation of environment and evaluation
-
----
-
-## 🏁 Project Status
-
-* Phase 1: Architecture ✅
-* Phase 2: Environment logic ✅
-* Phase 3: Reward system ✅
-* Phase 4: Evaluation pipeline ✅
+### Interactive docs
+`https://blah123-devops-incident-env.hf.space/docs`
 
 ---
 
-## 🔮 Future Work
+## Project structure
 
-* Train RL agents (PPO / policy-based methods)
-* Integrate real-world incident datasets
-* Extend to multi-step incident resolution
-* Incorporate LLM-assisted mitigation generation
-
----
-
-## 📌 Summary
-
-This project transforms DevOps incident handling into a **structured decision-making problem**.
-
-Instead of reacting to incidents manually, it enables:
-
-👉 learning-based diagnosis
-👉 interpretable evaluation
-👉 scalable incident reasoning systems
+```
+app.py           # FastAPI server — /reset, /step, /state, /health endpoints
+inference.py     # Baseline LLM agent (Qwen2.5-72B via HF router)
+openenv.yaml     # OpenEnv manifest
+Dockerfile       # Container config (Python 3.11, port 7860)
+env/
+  env.py         # Core environment: incidents, noise injection, reward computation
+  models.py      # Pydantic models: Action, Observation, Reward
+  state.py       # IncidentState dataclass (ground truth)
+  constants.py   # Enums: RootCause, Service, Severity
+server/
+  app.py         # Entry point for multi-mode deployment
+```
 
 ---
 
-**Built with ❤️ for DevOps teams that don’t get second chances during failure.**
+## Baseline agent
+
+`inference.py` runs a Qwen2.5-72B agent via the HF inference router. It uses a few-shot system prompt with one example per root cause category, showing the expected mitigation style. The agent is evaluated across all three task modes and the average score is reported.
+
+Configure via environment variables:
+```
+API_BASE_URL   HF inference router endpoint
+MODEL_NAME     Model identifier (default: Qwen/Qwen2.5-72B-Instruct)
+HF_TOKEN       Your Hugging Face API token
+```
+
+---
+
+## Phase status
+
+| Phase | Description | Status |
+|---|---|---|
+| 1 | API structure, typing, interface contracts | ✅ Complete |
+| 2 | Incident generation, deterministic reset | ✅ Complete |
+| 3 | Full reward system — mitigation + confidence shaping | ✅ Complete |
+| 4 | Structured telemetry logs + noise alert injection | ✅ Complete |
+
+---
+
+*Built for the OpenEnv Hackathon by Avanish Ganapathy — proving that a 3rd year CS student from Bangalore can ship production-grade evaluation infrastructure.*
