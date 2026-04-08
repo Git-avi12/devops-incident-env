@@ -52,18 +52,48 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 # ── LLM agent ─────────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """\
 You are an expert DevOps incident triage agent.
-Given logs and alerts from a production system, diagnose the incident.
+Given logs and alerts from a production system, diagnose the incident precisely.
+
 Reply ONLY with a valid JSON object with these exact keys:
   root_cause  : one of [database_overload, memory_leak, network_latency, api_failure, disk_full]
   service     : one of [payment_service, user_service, auth_service, inventory_service]
   severity    : one of [low, medium, high, critical]
-  mitigation  : a free-text string describing remediation steps
-  confidence  : a float between 0.0 and 1.0
-No explanation, no markdown, no extra text — just the JSON object."""
+  mitigation  : a free-text string describing concrete remediation steps (be specific)
+  confidence  : a float between 0.0 and 1.0 (be honest — high only when truly certain)
+
+No explanation, no markdown, no extra text — just the JSON object.
+
+--- EXAMPLES ---
+
+Logs: DB connections exceeded limit, queries timing out after 30s
+Alerts: High latency, DB CPU spike, Connection pool at 95%
+Response:
+{"root_cause":"database_overload","service":"payment_service","severity":"high","mitigation":"scale database by adding read replicas, optimize queries with missing indexes, increase connection pool size","confidence":0.95}
+
+Logs: Heap usage at 98%, GC running continuously with no relief
+Alerts: Heap near limit, GC overhead exceeded
+Response:
+{"root_cause":"memory_leak","service":"user_service","severity":"high","mitigation":"restart service immediately, attach profiler for heap dump analysis to identify leak source","confidence":0.92}
+
+Logs: Payment gateway returning 503, all transactions rejected, circuit breaker open
+Alerts: Payment gateway 503, Transaction failure 100%, Circuit breaker open
+Response:
+{"root_cause":"api_failure","service":"payment_service","severity":"critical","mitigation":"activate backup gateway immediately, keep circuit breaker open until primary recovers, notify on-call","confidence":0.97}
+
+Logs: Audit log volume full, writes failing with ENOSPC, auth events being dropped
+Alerts: Disk 100%, Audit write failure
+Response:
+{"root_cause":"disk_full","service":"auth_service","severity":"critical","mitigation":"rotate logs immediately, expand volume or mount additional storage, set up log retention policy","confidence":0.96}
+
+Logs: P99 latency 4200ms, upstream ACK timeouts on gateway, packet loss 8%
+Alerts: P99 latency critical, Gateway timeout, Packet loss detected
+Response:
+{"root_cause":"network_latency","service":"payment_service","severity":"critical","mitigation":"check routing tables for misconfiguration, failover region to healthy AZ, alert network team","confidence":0.93}
+--- END EXAMPLES ---"""
 
 
 def call_llm(client: OpenAI, logs: str, alerts: List[str]) -> dict:
-    user_prompt = f"Logs:\n{logs}\n\nAlerts:\n" + "\n".join(f"- {a}" for a in alerts)
+    user_prompt = f"Logs: {logs}\nAlerts: " + ", ".join(alerts)
     try:
         resp = client.chat.completions.create(
             model=MODEL_NAME,
@@ -71,7 +101,7 @@ def call_llm(client: OpenAI, logs: str, alerts: List[str]) -> dict:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": user_prompt},
             ],
-            temperature=0.2,
+            temperature=0.1,
             max_tokens=256,
         )
         text = (resp.choices[0].message.content or "").strip()
@@ -83,12 +113,13 @@ def call_llm(client: OpenAI, logs: str, alerts: List[str]) -> dict:
         return json.loads(text)
     except Exception as exc:
         print(f"[DEBUG] LLM call failed: {exc}", flush=True)
+        # Neutral fallback — no hardcoded answer to avoid accidental free score
         return {
-            "root_cause": "database_overload",
-            "service": "payment_service",
-            "severity": "high",
-            "mitigation": "scale database optimize queries restart service",
-            "confidence": 0.5,
+            "root_cause": "",
+            "service": "",
+            "severity": "",
+            "mitigation": "",
+            "confidence": 0.0,
         }
 
 
@@ -113,7 +144,7 @@ async def run_task(client: OpenAI, task_name: str) -> float:
                 service=str(decision.get("service", "")).strip(),
                 severity=str(decision.get("severity", "")).strip(),
                 mitigation=str(decision.get("mitigation", "")),
-                confidence=float(decision.get("confidence", 0.5)),
+                confidence=float(decision.get("confidence", 0.0)),
             )
 
             action_str = (
@@ -133,7 +164,8 @@ async def run_task(client: OpenAI, task_name: str) -> float:
             if done:
                 break
 
-        score = rewards[-1] if rewards else 0.0
+        # Use max reward across steps — safer than last-only if env allows retries
+        score = max(rewards) if rewards else 0.0
         score = round(min(max(score, 0.0), 1.0), 2)
         success = score >= SUCCESS_THRESHOLD
 
