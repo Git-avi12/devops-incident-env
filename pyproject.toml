@@ -20,4 +20,4 @@ server = "app:app"
 
 [tool.openenv]
 name = "devops_incident_env"
-entry_point = "app:app"
+entry_point = "app:main"
